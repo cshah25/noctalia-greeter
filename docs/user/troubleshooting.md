@@ -33,6 +33,9 @@ The service may have a different unit name on a distribution-provided setup. On 
 | `stderr`              | Send informational and debug messages to stdout, and warnings and errors to stderr |
 | An absolute file path | Append to that file and continue logging through syslog                            |
 
+`WLR_LOG` controls messages from the bundled wlroots compositor. Accepted values are
+`silent`, `error`, `info`, and `debug`; the session wrapper defaults to `error`.
+
 For temporary console diagnostics, add the variable to the greetd session command:
 
 ```toml
@@ -83,6 +86,28 @@ mode; both dimensions are required when either is set. See
 [Match the desktop output mode](displays.md#match-the-desktop-output-mode).
 For monitors with different refresh rates, set `[output].refresh_rate` to a
 mapping such as `"DP-1:120; HDMI-A-1:60"`.
+
+### Atomic commit failure during direct scan-out
+
+Noctalia Greeter disables wlroots direct scan-out by default. The optimization
+is not needed for a short-lived login session, and avoiding it removes a
+driver-sensitive path from multi-output presentation. An explicit
+`WLR_SCENE_DISABLE_DIRECT_SCANOUT` value is still honored; set it to `0` only
+when testing direct scan-out deliberately.
+
+On version 1.5.0, `Atomic commit failed` followed by `Direct scan-out disabled`
+means wlroots rejected the optional scan-out path and attempted compositing as
+a fallback; those two lines alone do not identify why the greeter later exited.
+Upgrade first. To test the same mitigation temporarily on 1.5.0, use:
+
+```toml
+[default_session]
+command = "env WLR_SCENE_DISABLE_DIRECT_SCANOUT=1 /usr/bin/noctalia-greeter-session"
+```
+
+If the current version still exits, capture the subsequent compositor line
+reporting the greeter's exit status or signal and any Wayland or EGL error from
+the greeter process. Those later lines identify the actual exit path.
 
 ### Screen never blanks
 
@@ -154,6 +179,36 @@ Put names containing spaces or punctuation in `greeter.toml` instead of leaving 
 ### GNOME returns to the greeter
 
 GNOME expects a systemd-managed user session and may fail with a `graphical-session-pre.target` error. The greeter passes `XDG_SESSION_TYPE` and the desktop entry's `DesktopNames` environment through greetd, but GNOME support remains best-effort compared with GDM. If the normal entry still fails, use GDM for GNOME or create a suitable `wayland-sessions` wrapper.
+
+### X11 session doesn't start
+
+`xsessions` entries run through `noctalia-greeter-xsession`, which needs
+`startx` (from `xinit`) installed. `startx: command not found` (or
+noctalia-greeter's own "startx not found" error) in the session log means
+`xinit` is missing.
+
+If `startx` is present but Xorg itself fails, reproduce the exact wrapper
+invocation by hand from a terminal to see the real Xorg error:
+
+```sh
+noctalia-greeter-xsession /path/to/session/binary
+```
+
+A `parse_vt_settings: Cannot open /dev/tty0 (Permission denied)` error here
+usually means `XDG_VTNR` was unset in the environment you ran this from (it
+is only guaranteed to be set for a real session opened by greetd's PAM
+stack, e.g. via `pam_elogind.so`/`pam_systemd.so` in `/etc/pam.d/greetd`) —
+this is expected when testing from an existing desktop session rather than
+through the greeter.
+
+If Xorg starts but the screen shows a terminal instead of the desktop, with
+an error like `xterm: bad command line option`, the wrapper's `startx` fell
+back to its default client instead of running the session — this is handled
+automatically since noctalia-greeter resolves `Exec=` to an absolute path
+before calling `startx`, but a very old or unusual `startx` implementation
+may still behave differently. See
+[Default session](configuration.md#default-session) for what the wrapper
+does and why.
 
 ## Sync and Polkit
 

@@ -92,6 +92,11 @@ static void compositor_log_stderr(int priority, const char* format, ...) {
 }
 
 static void compositor_wlr_log(enum wlr_log_importance importance, const char* format, va_list args) {
+  // wlroots delegates verbosity filtering to custom log callbacks.
+  if (importance > wlr_log_get_verbosity()) {
+    return;
+  }
+
   va_list stderr_args;
   va_copy(stderr_args, args);
   if (compositor_syslog_enabled) {
@@ -110,6 +115,45 @@ static void compositor_init_logging(void) {
   if (compositor_syslog_enabled) {
     openlog("noctalia-greeter-compositor", LOG_PID | LOG_NDELAY, LOG_DAEMON);
   }
+}
+
+static enum wlr_log_importance compositor_wlr_log_importance(void) {
+  const char* configured = getenv("WLR_LOG");
+  if (configured == NULL || configured[0] == '\0') {
+    return WLR_INFO;
+  }
+  if (strcmp(configured, "silent") == 0) {
+    return WLR_SILENT;
+  }
+  if (strcmp(configured, "error") == 0) {
+    return WLR_ERROR;
+  }
+  if (strcmp(configured, "info") == 0) {
+    return WLR_INFO;
+  }
+  if (strcmp(configured, "debug") == 0) {
+    return WLR_DEBUG;
+  }
+
+  compositor_log_stderr(LOG_WARNING, "unrecognized WLR_LOG=%s; using info\n", configured);
+  return WLR_INFO;
+}
+
+static void configure_direct_scanout(void) {
+  const char* configured = getenv("WLR_SCENE_DISABLE_DIRECT_SCANOUT");
+  if (configured != NULL) {
+    wlr_log(WLR_INFO, "honoring WLR_SCENE_DISABLE_DIRECT_SCANOUT=%s", configured);
+    return;
+  }
+
+  // A greeter favors reliable presentation over bypassing one composition
+  // pass. In particular, wlroots 0.20 direct scan-out tests can destabilize
+  // otherwise working multi-output DRM configurations on some drivers.
+  if (setenv("WLR_SCENE_DISABLE_DIRECT_SCANOUT", "1", 0) != 0) {
+    wlr_log(WLR_ERROR, "failed to disable direct scan-out by default");
+    return;
+  }
+  wlr_log(WLR_INFO, "direct scan-out disabled by default");
 }
 
 struct greeter_server;
@@ -2422,7 +2466,8 @@ static void cleanup_server_resources(struct greeter_server* server) {
 
 int main(int argc, char** argv) {
   compositor_init_logging();
-  wlr_log_init(WLR_INFO, compositor_wlr_log);
+  wlr_log_init(compositor_wlr_log_importance(), compositor_wlr_log);
+  configure_direct_scanout();
 
   struct greeter_server server = {0};
   server.idle_timerfd = -1;
